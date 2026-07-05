@@ -86,21 +86,60 @@ export class GameWindow extends EventEmitter {
   }
 
   processAuthCallback(url: string) {
-    const escaped = url.replace(/\\/g, '\\\\').replace(/'/g, "\\'")
+    const payload = JSON.stringify(url)
     const js = `
       (function() {
-        var iframes = document.querySelectorAll('iframe');
-        for (var i = 0; i < iframes.length; i++) {
+        var payload = ${payload};
+        var targetId = window.$pendingAuthTabId || window.$current_id || null;
+        var iframes = Array.prototype.slice.call(document.querySelectorAll('iframe'));
+        function dispatchTo(win, label) {
+          if (!win || typeof win.$appSchemeLinkCalled !== 'function') return null;
+          win.$appSchemeLinkCalled(payload);
+          window.$pendingAuthTabId = null;
+          return 'dispatched to ' + label;
+        }
+        function iframeWindow(iframe) {
           try {
-            var win = iframes[i].contentWindow;
-            if (win && typeof win.$appSchemeLinkCalled === 'function') {
-              win.$appSchemeLinkCalled('${escaped}');
-              return 'dispatched to iframe ' + i;
+            return iframe.contentWindow;
+          } catch(e) {
+            return null;
+          }
+        }
+        function isVisible(iframe) {
+          var node = iframe;
+          while (node && node !== document.body) {
+            var style = window.getComputedStyle(node);
+            if (style.display === 'none' || style.visibility === 'hidden') return false;
+            node = node.parentElement;
+          }
+          return true;
+        }
+
+        if (targetId) {
+          for (var i = 0; i < iframes.length; i++) {
+            var targetWin = iframeWindow(iframes[i]);
+            if (targetWin && String(targetWin.$game_id || '') === String(targetId)) {
+              var targeted = dispatchTo(targetWin, 'iframe ' + i + ' (' + targetId + ')');
+              if (targeted) return targeted;
             }
-          } catch(e) {}
+          }
+        }
+
+        for (var i = 0; i < iframes.length; i++) {
+          if (!isVisible(iframes[i])) continue;
+          var visibleWin = iframeWindow(iframes[i]);
+          var visible = dispatchTo(visibleWin, 'visible iframe ' + i);
+          if (visible) return visible;
+        }
+
+        for (var i = 0; i < iframes.length; i++) {
+          var win = iframeWindow(iframes[i]);
+          var fallback = dispatchTo(win, 'iframe ' + i);
+          if (fallback) return fallback;
         }
         if (typeof window.$appSchemeLinkCalled === 'function') {
-          window.$appSchemeLinkCalled('${escaped}');
+          window.$appSchemeLinkCalled(payload);
+          window.$pendingAuthTabId = null;
           return 'dispatched to window';
         }
         return 'no handler found';

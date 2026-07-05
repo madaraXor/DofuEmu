@@ -119,6 +119,8 @@ function runTests() {
     assert(html.includes('IonicDeeplink'), 'missing IonicDeeplink mock')
     assert(html.includes('browsertab'), 'missing browsertab mock')
     assert(html.includes('_deepLinkCallbacks'), 'missing deeplink callback bridge')
+    assert(html.includes('$pendingAuthTabId'), 'missing pending auth tab tracking')
+    assert(html.includes('openDofEmuExternalUrl'), 'missing routed external auth opener')
   })
 
   test('fixes.js has mouse-to-touch conversion', () => {

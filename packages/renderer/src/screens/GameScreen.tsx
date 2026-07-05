@@ -21,11 +21,17 @@ const POLL_INTERVAL = 200
 const RESIZE_DELAYS = [100, 250, 500, 1000, 2000]
 const PARTY_INVITE_DELAY = 3000
 
+function getGameTabSrc(gameSrc: string, tabId: string) {
+  const separator = gameSrc.includes('?') ? '&' : '?'
+  return `${gameSrc}${separator}id=${encodeURIComponent(tabId)}`
+}
+
 declare global {
   interface Window {
     $gameWindows: DofusWindow[]
     $game_id: string
     $current_id: string
+    $pendingAuthTabId?: string | null
     $appSchemeLinkCalled: (payload: string) => void
   }
 }
@@ -126,11 +132,25 @@ function GameLoadingBackdrop({ title, subtitle }: { title: string; subtitle: str
 function GameIframe({ tab, gameSrc, isVisible }: { tab: GameTab; gameSrc: string; isVisible: boolean }) {
   const iframeRef = useRef<HTMLIFrameElementWithDofus>(null)
   const cleanupRef = useRef<Array<() => void>>([])
+  const attachedWindowRef = useRef<DofusWindow | null>(null)
   const { setTabReady, setTabLoading, setTabCharacter } = useGameTabStore()
 
   const cleanupGameListeners = () => {
     for (const cleanup of cleanupRef.current) cleanup()
     cleanupRef.current = []
+
+    const attachedWindow = attachedWindowRef.current
+    if (attachedWindow && window.parent.$gameWindows) {
+      window.parent.$gameWindows = window.parent.$gameWindows.filter(
+        (gw) => gw !== attachedWindow && gw.$game_id !== tab.id
+      )
+    }
+    attachedWindowRef.current = null
+
+    if (window.$pendingAuthTabId === tab.id) window.$pendingAuthTabId = null
+    if (window.$current_id === tab.id) {
+      window.$current_id = useGameTabStore.getState().activeTabId || ''
+    }
   }
 
   useEffect(() => cleanupGameListeners, [])
@@ -144,7 +164,38 @@ function GameIframe({ tab, gameSrc, isVisible }: { tab: GameTab; gameSrc: string
     setTabLoading(tab.id, true)
 
     gameWindow.openDatabase = undefined
-    gameWindow.initDofus(() => {
+    let initTimer: number | null = null
+    let initAttempts = 0
+    cleanupRef.current.push(() => {
+      if (initTimer !== null) window.clearTimeout(initTimer)
+    })
+
+    const startGame = () => {
+      if (!iframeRef.current || iframeRef.current.contentWindow !== gameWindow) return
+
+      if (typeof gameWindow.initDofus !== 'function') {
+        initAttempts += 1
+        if (initAttempts === 1 || initAttempts % 10 === 0) {
+          window.dofemu.logger.warn('initDofus not ready yet for tab', tab.id, gameWindow.location?.href)
+        }
+        if (initAttempts > MAX_POLL_ATTEMPTS) {
+          window.dofemu.logger.error('initDofus never became available for tab', tab.id, gameWindow.location?.href)
+          setTabLoading(tab.id, false)
+          return
+        }
+        initTimer = window.setTimeout(startGame, POLL_INTERVAL)
+        return
+      }
+
+      try {
+        gameWindow.initDofus(onGameInitialized)
+      } catch (err) {
+        window.dofemu.logger.error('initDofus failed for tab', tab.id, err)
+        setTabLoading(tab.id, false)
+      }
+    }
+
+    const onGameInitialized = () => {
       window.dofemu.logger.info('initDofus done for tab', tab.id)
 
       if (!window.parent.$gameWindows) {
@@ -152,7 +203,9 @@ function GameIframe({ tab, gameSrc, isVisible }: { tab: GameTab; gameSrc: string
       }
       gameWindow.$game_id = tab.id
       window.parent.$current_id = tab.id
+      window.parent.$gameWindows = window.parent.$gameWindows.filter((gw) => gw.$game_id !== tab.id)
       window.parent.$gameWindows.push(gameWindow)
+      attachedWindowRef.current = gameWindow
 
       setTabReady(tab.id, true)
       setTabLoading(tab.id, false)
@@ -243,8 +296,11 @@ function GameIframe({ tab, gameSrc, isVisible }: { tab: GameTab; gameSrc: string
         const poll = setInterval(() => {
           if (attachGameListeners() || ++attempts > MAX_POLL_ATTEMPTS) clearInterval(poll)
         }, POLL_INTERVAL)
+          cleanupRef.current.push(() => clearInterval(poll))
       }
-    })
+    }
+
+    startGame()
   }
 
   return (
@@ -261,7 +317,7 @@ function GameIframe({ tab, gameSrc, isVisible }: { tab: GameTab; gameSrc: string
       <iframe
         ref={iframeRef}
         onLoad={handleLoad}
-        src={gameSrc + '?id=' + tab.id}
+        src={getGameTabSrc(gameSrc, tab.id)}
         style={{
           border: 'none',
           width: '100%',
@@ -297,6 +353,10 @@ export function GameScreen() {
   }, [isHydrated, loadSettings])
 
   useEffect(() => {
+    if (activeTabId) window.$current_id = activeTabId
+  }, [activeTabId])
+
+  useEffect(() => {
     const handler = (e: MessageEvent) => {
       if (e.data?.type === 'dofemu:char-icon') {
         useGameTabStore.getState().setTabIcon(e.data.tabId, e.data.dataUrl)
@@ -317,14 +377,44 @@ export function GameScreen() {
 
   useEffect(() => {
     const unsub = window.dofemu.onAuthCallback((url) => {
-      const iframes = document.querySelectorAll('iframe')
+      const targetId = window.$pendingAuthTabId || window.$current_id || null
+      const iframes = Array.from(document.querySelectorAll('iframe')) as HTMLIFrameElementWithDofus[]
+      const dispatchTo = (win: DofusWindow | null, label: string) => {
+        if (!win?.$appSchemeLinkCalled) return false
+        win.$appSchemeLinkCalled(url)
+        window.$pendingAuthTabId = null
+        window.dofemu.logger.info('Auth callback dispatched to', label)
+        return true
+      }
+      const isFrameVisible = (iframe: HTMLIFrameElement) => {
+        let node: HTMLElement | null = iframe
+        while (node && node !== document.body) {
+          const style = window.getComputedStyle(node)
+          if (style.display === 'none' || style.visibility === 'hidden') return false
+          node = node.parentElement
+        }
+        return true
+      }
+
+      if (targetId) {
+        for (const iframe of iframes) {
+          try {
+            const win = iframe.contentWindow
+            if (win?.$game_id === targetId && dispatchTo(win, `tab ${targetId}`)) return
+          } catch {}
+        }
+      }
+
+      for (const iframe of iframes) {
+        if (!isFrameVisible(iframe)) continue
+        try {
+          if (dispatchTo(iframe.contentWindow, 'visible tab')) return
+        } catch {}
+      }
+
       for (const iframe of iframes) {
         try {
-          const win = (iframe as HTMLIFrameElement).contentWindow as any
-          if (win?.$appSchemeLinkCalled) {
-            win.$appSchemeLinkCalled(url)
-            return
-          }
+          if (dispatchTo(iframe.contentWindow, 'first available tab')) return
         } catch {}
       }
     })
