@@ -3,6 +3,43 @@ var attach = function () {
     var gui = window.gui
     var auth = window.$_authManager
     var account = (auth && auth.account) || (gui && gui.account) || window.$_haapiAccount
+    var authState = {}
+
+    var getDofEmuTabId = function () {
+      try {
+        if (window.$game_id) return window.$game_id
+        if (window.location && window.location.search) {
+          var match = window.location.search.match(/[?&]id=([^&]+)/)
+          if (match) return decodeURIComponent(match[1])
+        }
+      } catch (err) {}
+      return null
+    }
+
+    var publishAuthState = function (partial) {
+      try {
+        authState = Object.assign(authState, partial || {})
+        var accountId = authState.accountId || window.$_pendingHaapiAccountId || (window.localStorage && window.localStorage.getItem('HAAPI_ACCOUNTID'))
+        var apiKey = authState.apiKey || window.$_pendingApiKeyHeader || (window.localStorage && window.localStorage.getItem('HAAPI_KEY'))
+        if (!apiKey) return
+
+        var accountKey = accountId ? String(accountId) : ''
+        var payload = {
+          apiKey: apiKey,
+          refreshKey: authState.refreshKey || window.$_pendingRefreshKey || (window.localStorage && window.localStorage.getItem('HAAPI_REFRESH_TOKEN')) || '',
+          accountId: accountKey,
+          certificateId: authState.certificateId || window.$_authCertId || (accountKey && window.localStorage && window.localStorage.getItem(accountKey + '_CERTIFICATE_ID')) || '',
+          certificateHash: authState.certificateHash || window.$_authCertHash || (accountKey && window.localStorage && window.localStorage.getItem(accountKey + '_CERTIFICATE_HASH')) || '',
+          updatedAt: Date.now()
+        }
+
+        if (window.top && window.top.postMessage) {
+          window.top.postMessage({ type: 'dofemu:auth-state', tabId: getDofEmuTabId(), auth: payload }, '*')
+        }
+      } catch (err) {
+        console.error('DofEmu publish auth state failed:', err)
+      }
+    }
 
     if (gui && gui.playerData && typeof gui.playerData.setLoginName === 'function') {
       window.$_setLoginName = gui.playerData.setLoginName.bind(gui.playerData)
@@ -42,6 +79,36 @@ var attach = function () {
         : null
 
     if (mgr) {
+      if (!mgr.$_dofEmuPersistPatch) {
+        mgr.$_dofEmuPersistPatch = true
+
+        if (typeof mgr.setHaapiKey === 'function') {
+          var originalSetHaapiKey = mgr.setHaapiKey.bind(mgr)
+          mgr.setHaapiKey = function (apiKey, refreshKey, options) {
+            var result = originalSetHaapiKey(apiKey, refreshKey, options)
+            publishAuthState({ apiKey: apiKey, refreshKey: refreshKey || '' })
+            return result
+          }
+        }
+
+        if (typeof mgr.setHaapiAccountId === 'function') {
+          var originalSetHaapiAccountId = mgr.setHaapiAccountId.bind(mgr)
+          mgr.setHaapiAccountId = function (id, options) {
+            var result = originalSetHaapiAccountId(id, options)
+            publishAuthState({ accountId: id })
+            return result
+          }
+        }
+      }
+
+      if (window.$_pendingHaapiAccountId && typeof mgr.setHaapiAccountId === 'function') {
+        mgr.setHaapiAccountId(window.$_pendingHaapiAccountId, { save: false })
+      }
+
+      if (window.$_pendingApiKeyHeader && typeof mgr.setHaapiKey === 'function') {
+        mgr.setHaapiKey(window.$_pendingApiKeyHeader, window.$_pendingRefreshKey || '', { save: false })
+      }
+
       if (!window.$_setHaapiKey && typeof mgr.setHaapiKey === 'function') {
         window.$_setHaapiKey = function (apiKey, refreshKey, options) {
           try { mgr.setHaapiKey(apiKey, refreshKey || '', options) } catch (err) { console.error('DofEmu setHaapiKey failed:', err) }
@@ -101,6 +168,13 @@ var attach = function () {
           }
           if (o.certificateId) window.$_authCertId = o.certificateId
           if (o.certificateHash) window.$_authCertHash = o.certificateHash
+          publishAuthState({
+            apiKey: o.apiKey,
+            refreshKey: o.refreshKey || '',
+            accountId: o.accountId,
+            certificateId: o.certificateId || '',
+            certificateHash: o.certificateHash || ''
+          })
           var payload = Object.assign({}, o.params || {})
           if (!payload.certificate_id && o.certificateId) payload.certificate_id = o.certificateId
           if (!payload.certificate_hash && o.certificateHash) payload.certificate_hash = o.certificateHash
@@ -144,6 +218,13 @@ var attach = function () {
             window.parent.$_authCertId = window.$_authCertId
             window.parent.$_authCertHash = window.$_authCertHash
           }
+          publishAuthState({
+            apiKey: apiKey,
+            refreshKey: refreshKey || '',
+            accountId: accountId,
+            certificateId: certificateId || '',
+            certificateHash: certificateHash || ''
+          })
         } catch (err) {
           console.error('DofEmu primeHaapiKey failed:', err)
         }

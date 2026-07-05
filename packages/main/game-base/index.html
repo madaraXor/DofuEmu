@@ -72,6 +72,44 @@
         return null;
       }
 
+      function isDofEmuScopedStorageKey(key) {
+        return key === "CODE_VERIFIER" ||
+          key === "HAAPI_KEY" ||
+          key === "HAAPI_REFRESH_TOKEN" ||
+          key === "HAAPI_ACCOUNTID" ||
+          /_CERTIFICATE_(ID|HASH)$/.test(key);
+      }
+
+      function getDofEmuScopedStorageKey(key) {
+        var tabId = getDofEmuTabId();
+        return tabId && isDofEmuScopedStorageKey(key) ? "dofemu:" + tabId + ":" + key : key;
+      }
+
+      (function patchDofEmuScopedStorage() {
+        try {
+          if (!window.Storage || window.Storage.prototype.$dofEmuScopedStorage) return;
+
+          var proto = window.Storage.prototype;
+          var getItem = proto.getItem;
+          var setItem = proto.setItem;
+          var removeItem = proto.removeItem;
+
+          proto.$dofEmuScopedStorage = true;
+          proto.getItem = function(key) {
+            return getItem.call(this, getDofEmuScopedStorageKey(String(key)));
+          };
+          proto.setItem = function(key, value) {
+            return setItem.call(this, getDofEmuScopedStorageKey(String(key)), value);
+          };
+          proto.removeItem = function(key) {
+            removeItem.call(this, getDofEmuScopedStorageKey(String(key)));
+            return removeItem.call(this, String(key));
+          };
+        } catch (e) {
+          console.error("DofEmu scoped storage patch failed", e);
+        }
+      })();
+
       function markDofEmuCurrentTab() {
         try {
           var tabId = getDofEmuTabId();

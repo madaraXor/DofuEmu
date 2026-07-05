@@ -219,8 +219,17 @@ export const useGameTabStore = create<GameTabState>()(
       reorderTabs: (newOrder) => {
         set((state) => {
           const tabMap = new Map(state.tabs.map((t) => [t.id, t]));
+          const orderedTabs = newOrder
+            .map((id) => tabMap.get(id))
+            .filter((tab): tab is GameTab => !!tab);
+          const orderedIds = new Set(orderedTabs.map((tab) => tab.id));
+          const missingTabs = state.tabs.filter((tab) => !orderedIds.has(tab.id));
+
           return {
-            tabs: newOrder.map((id) => tabMap.get(id)!).filter(Boolean),
+            tabs: [...orderedTabs, ...missingTabs].map((tab) => ({
+              ...tab,
+              isActive: tab.id === state.activeTabId,
+            })),
           };
         });
       },
