@@ -4,7 +4,7 @@ import { serve } from '@hono/node-server'
 import crypto from 'crypto'
 import { Server } from 'http'
 import { AddressInfo } from 'net'
-import { join } from 'path'
+import path, { join } from 'path'
 import fs from 'fs'
 import ElectronStore from 'electron-store'
 import { IPCEvents, GameContext, NativeNotificationPayload, AppUpdateStatus } from '@dofemu/shared'
@@ -38,11 +38,14 @@ const MIME_TYPES: Record<string, string> = {
 }
 
 function createStaticHandler(basePath: string, urlPrefix: string) {
+  const rootPath = path.resolve(basePath)
+
   return async (c: Context) => {
     const reqPath = c.req.path.slice(urlPrefix.length)
-    const filePath = join(basePath, decodeURIComponent(reqPath))
+    const filePath = path.resolve(rootPath, decodeURIComponent(reqPath))
+    const relativePath = path.relative(rootPath, filePath)
 
-    if (!filePath.startsWith(basePath)) {
+    if (relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
       return c.text('Forbidden', 403)
     }
 

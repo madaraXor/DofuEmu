@@ -1,6 +1,11 @@
 import { defineConfig } from 'vite'
 import path from 'path'
 
+const isExternalDependency = (id: string) =>
+  id === 'electron' ||
+  id.startsWith('electron/') ||
+  (!id.startsWith('.') && !path.isAbsolute(id) && !id.startsWith('@dofemu/'))
+
 export default defineConfig({
   build: {
     outDir: path.resolve(__dirname, '../../dist/preload'),
@@ -10,7 +15,7 @@ export default defineConfig({
       fileName: () => 'index.cjs'
     },
     rollupOptions: {
-      external: (id) => id === 'electron' || id.startsWith('electron/') || !id.startsWith('.') && !id.startsWith('/') && !id.startsWith('@dofemu/')
+      external: isExternalDependency
     },
     minify: false,
     emptyOutDir: true
