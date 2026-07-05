@@ -5,7 +5,7 @@ import { WindowButton } from '@/components/WindowButton'
 import { useGameTabStore, GameTab } from '@/stores/gameTabStore'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { useTeamStore } from '@/stores/teamStore'
-import { useHotkeys } from '@/hooks/use-hotkeys'
+import { findHotkeyAction, useHotkeys } from '@/hooks/use-hotkeys'
 import { initAutoGroup, broadcastLeaderPosition, destroyAutoGroup, sendPartyInvite, autoAcceptPartyInvite } from '@/mods/auto-group'
 import { initNotificationFocus } from '@/mods/notification-focus'
 import { colors } from '@/theme'
@@ -129,11 +129,28 @@ function GameLoadingBackdrop({ title, subtitle }: { title: string; subtitle: str
 }
 
 
-function GameIframe({ tab, gameSrc, isVisible }: { tab: GameTab; gameSrc: string; isVisible: boolean }) {
+function GameIframe({
+  tab,
+  gameSrc,
+  isVisible,
+  hotkeys,
+  onHotkeyAction
+}: {
+  tab: GameTab
+  gameSrc: string
+  isVisible: boolean
+  hotkeys: Record<HotkeyAction, string>
+  onHotkeyAction: (action: HotkeyAction) => void
+}) {
   const iframeRef = useRef<HTMLIFrameElementWithDofus>(null)
   const cleanupRef = useRef<Array<() => void>>([])
   const attachedWindowRef = useRef<DofusWindow | null>(null)
+  const hotkeysRef = useRef(hotkeys)
+  const onHotkeyActionRef = useRef(onHotkeyAction)
   const { setTabReady, setTabLoading, setTabCharacter } = useGameTabStore()
+
+  hotkeysRef.current = hotkeys
+  onHotkeyActionRef.current = onHotkeyAction
 
   const cleanupGameListeners = () => {
     for (const cleanup of cleanupRef.current) cleanup()
@@ -224,6 +241,20 @@ function GameIframe({ tab, gameSrc, isVisible }: { tab: GameTab; gameSrc: string
       if (iframeRef.current) observer.observe(iframeRef.current)
       cleanupRef.current.push(() => observer.disconnect())
 
+      const onGameKeyDown = (event: KeyboardEvent) => {
+        const action = findHotkeyAction(event, hotkeysRef.current)
+        if (!action) return
+
+        event.preventDefault()
+        event.stopPropagation()
+        event.stopImmediatePropagation()
+        window.dofemu.logger.info('Game iframe hotkey', action, 'for tab', tab.id)
+        onHotkeyActionRef.current(action)
+      }
+
+      gameWindow.addEventListener('keydown', onGameKeyDown, true)
+      cleanupRef.current.push(() => gameWindow.removeEventListener('keydown', onGameKeyDown, true))
+
       const gw = gameWindow as any
 
       const attachGameListeners = () => {
@@ -248,7 +279,7 @@ function GameIframe({ tab, gameSrc, isVisible }: { tab: GameTab; gameSrc: string
 
                   if (matchedChar.id !== team.leaderId && leader) {
 
-                    autoAcceptPartyInvite(gw, leader.name)
+                    cleanupRef.current.push(autoAcceptPartyInvite(gw, leader.name))
 
 
                     const leaderTabId = teamState.getTabForCharacter(team.leaderId)
@@ -662,6 +693,8 @@ export function GameScreen() {
             tab={tab}
             gameSrc={gameSrc}
             isVisible={tab.id === activeTabId}
+            hotkeys={hotkeys}
+            onHotkeyAction={handleHotkeyAction}
           />
         ))}
       </div>

@@ -9,7 +9,16 @@ interface HotkeyConfig {
   enabled?: boolean
 }
 
-function normalizeKeyCombo(event: KeyboardEvent): string {
+export interface HotkeyEventLike {
+  key: string
+  ctrlKey: boolean
+  metaKey: boolean
+  shiftKey: boolean
+  altKey: boolean
+  target?: EventTarget | null
+}
+
+function normalizeKeyCombo(event: HotkeyEventLike): string {
   const parts: string[] = []
   if (event.ctrlKey || event.metaKey) parts.push('Ctrl')
   if (event.shiftKey) parts.push('Shift')
@@ -53,7 +62,7 @@ function parseCombo(combo: string): { ctrl: boolean; shift: boolean; alt: boolea
   return { ctrl, shift, alt, key }
 }
 
-function matchesCombo(event: KeyboardEvent, combo: string): boolean {
+function matchesCombo(event: HotkeyEventLike, combo: string): boolean {
   const parsed = parseCombo(combo)
   const hasCtrl = event.ctrlKey || event.metaKey
   if (parsed.ctrl !== hasCtrl) return false
@@ -68,6 +77,39 @@ function matchesCombo(event: KeyboardEvent, combo: string): boolean {
   return eventKey === parsed.key.toUpperCase()
 }
 
+function isEditableTarget(target?: EventTarget | null): boolean {
+  const element = target as {
+    tagName?: string
+    isContentEditable?: boolean
+    closest?: (selector: string) => Element | null
+  } | null
+
+  if (!element) return false
+
+  const tagName = typeof element.tagName === 'string' ? element.tagName.toUpperCase() : ''
+  if (tagName === 'INPUT' || tagName === 'TEXTAREA' || tagName === 'SELECT') return true
+  if (element.isContentEditable) return true
+  return typeof element.closest === 'function'
+    ? !!element.closest('[contenteditable="true"], [contenteditable=""]')
+    : false
+}
+
+export function findHotkeyAction(
+  event: HotkeyEventLike,
+  hotkeys: Record<HotkeyAction, string>
+): HotkeyAction | null {
+  if (['Control', 'Shift', 'Alt', 'Meta'].includes(event.key)) return null
+  if (isEditableTarget(event.target)) return null
+
+  const entries = Object.entries(hotkeys) as [HotkeyAction, string][]
+  for (const [action, combo] of entries) {
+    if (!combo) continue
+    if (matchesCombo(event, combo)) return action
+  }
+
+  return null
+}
+
 export function useHotkeys(config: HotkeyConfig) {
   const configRef = useRef(config)
   configRef.current = config
@@ -76,25 +118,13 @@ export function useHotkeys(config: HotkeyConfig) {
     if (config.enabled === false) return
 
     const handler = (event: KeyboardEvent) => {
-      if (['Control', 'Shift', 'Alt', 'Meta'].includes(event.key)) return
-
-      const target = event.target as HTMLElement
-      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
-        return
-      }
-
       const { hotkeys, onAction } = configRef.current
-      const entries = Object.entries(hotkeys) as [HotkeyAction, string][]
+      const action = findHotkeyAction(event, hotkeys)
+      if (!action) return
 
-      for (const [action, combo] of entries) {
-        if (!combo) continue
-        if (matchesCombo(event, combo)) {
-          event.preventDefault()
-          event.stopPropagation()
-          onAction(action)
-          return
-        }
-      }
+      event.preventDefault()
+      event.stopPropagation()
+      onAction(action)
     }
 
     window.addEventListener('keydown', handler, true)
