@@ -26,6 +26,10 @@ function getGameTabSrc(gameSrc: string, tabId: string) {
   return `${gameSrc}${separator}id=${encodeURIComponent(tabId)}`
 }
 
+function areStringArraysEqual(a: string[], b: string[]) {
+  return a.length === b.length && a.every((value, index) => value === b[index])
+}
+
 declare global {
   interface Window {
     $gameWindows: DofusWindow[]
@@ -347,6 +351,8 @@ export function GameScreen() {
   const [isMaximized, setIsMaximized] = useState(false)
   const [dragTabId, setDragTabId] = useState<string | null>(null)
   const [dragOverTabId, setDragOverTabId] = useState<string | null>(null)
+  const [iframeOrder, setIframeOrder] = useState(() => tabs.map((tab) => tab.id))
+  const suppressTabClickRef = useRef(false)
 
   useEffect(() => {
     if (!isHydrated) loadSettings()
@@ -355,6 +361,21 @@ export function GameScreen() {
   useEffect(() => {
     if (activeTabId) window.$current_id = activeTabId
   }, [activeTabId])
+
+  useEffect(() => {
+    const tabIds = tabs.map((tab) => tab.id)
+
+    setIframeOrder((currentOrder) => {
+      const tabIdSet = new Set(tabIds)
+      const currentIdSet = new Set(currentOrder)
+      const nextOrder = [
+        ...currentOrder.filter((tabId) => tabIdSet.has(tabId)),
+        ...tabIds.filter((tabId) => !currentIdSet.has(tabId))
+      ]
+
+      return areStringArraysEqual(currentOrder, nextOrder) ? currentOrder : nextOrder
+    })
+  }, [tabs])
 
   useEffect(() => {
     const handler = (e: MessageEvent) => {
@@ -550,16 +571,21 @@ export function GameScreen() {
 
   const handleDrop = (targetTabId: string) => {
     if (dragTabId && dragTabId !== targetTabId) {
-      const oldIndex = tabs.findIndex((t) => t.id === dragTabId)
-      const newIndex = tabs.findIndex((t) => t.id === targetTabId)
-      const newOrder = tabs.map((t) => t.id)
-      newOrder.splice(oldIndex, 1)
-      newOrder.splice(newIndex, 0, dragTabId)
+      const newOrder = tabs.map((t) => t.id).filter((id) => id !== dragTabId)
+      const targetIndex = newOrder.indexOf(targetTabId)
+      newOrder.splice(targetIndex === -1 ? newOrder.length : targetIndex, 0, dragTabId)
       reorderTabs(newOrder)
     }
     setDragTabId(null)
     setDragOverTabId(null)
   }
+
+  const iframeOrderSet = new Set(iframeOrder)
+  const tabsById = new Map(tabs.map((tab) => [tab.id, tab]))
+  const iframeTabs = [
+    ...iframeOrder.map((tabId) => tabsById.get(tabId)).filter((tab): tab is GameTab => !!tab),
+    ...tabs.filter((tab) => !iframeOrderSet.has(tab.id))
+  ]
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
@@ -581,7 +607,10 @@ export function GameScreen() {
             <button
               key={tab.id}
               draggable
-              onClick={() => setActiveTab(tab.id)}
+              onClick={() => {
+                if (suppressTabClickRef.current) return
+                setActiveTab(tab.id)
+              }}
               onDragStart={(e) => {
                 setDragTabId(tab.id)
                 e.dataTransfer.effectAllowed = 'move'
@@ -594,7 +623,14 @@ export function GameScreen() {
               onDragEnter={(e) => { e.preventDefault(); setDragOverTabId(tab.id) }}
               onDragLeave={() => { if (dragOverTabId === tab.id) setDragOverTabId(null) }}
               onDrop={(e) => { e.preventDefault(); handleDrop(tab.id) }}
-              onDragEnd={() => { setDragTabId(null); setDragOverTabId(null) }}
+              onDragEnd={() => {
+                suppressTabClickRef.current = true
+                setDragTabId(null)
+                setDragOverTabId(null)
+                window.setTimeout(() => {
+                  suppressTabClickRef.current = false
+                }, 0)
+              }}
               style={{
                 display: 'flex',
                 alignItems: 'center',
@@ -656,7 +692,7 @@ export function GameScreen() {
         </div>
       </div>
       <div style={{ position: 'relative', flex: 1, minHeight: 0 }}>
-        {tabs.map((tab) => (
+        {iframeTabs.map((tab) => (
           <GameIframe
             key={tab.id}
             tab={tab}
